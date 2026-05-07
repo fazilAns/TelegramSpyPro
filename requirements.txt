@@ -1,4 +1,2 @@
 telethon
-streamlit
-pandas
-plotly
+pymongo[srv]
