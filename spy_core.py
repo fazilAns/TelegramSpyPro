@@ -1,136 +1,117 @@
 from telethon import TelegramClient, events
-import sqlite3
+from pymongo import MongoClient
 from datetime import datetime
 import asyncio
-import sys
+import subprocess
 import os
 
 # --- CONFIGURATION ---
 API_ID = 23778342
 API_HASH = '9525e6f6e968605d773e16a33a4fcf62'
-# Note: Telethon adds .session automatically, so we use the base name
 SESSION_NAME = 'spy_pro_session' 
-DB_NAME = 'spy_pro_data.db'
+
+# നിന്റെ പാസ്‌വേഡ് (fazil@2001) ഇതിൽ സുരക്ഷിതമായി എൻകോഡ് ചെയ്തിട്ടുണ്ട് (%40)
+MONGO_URI = "mongodb+srv://Fazil:fazil%402001@cluster0.jxxoihs.mongodb.net/?appName=Cluster0"
 # ---------------------
 
-def setup_db():
-    """Initializes the database and creates required tables if they don't exist."""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    # Table for current user details
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS current_users (
-            user_id INTEGER PRIMARY KEY,
-            last_name TEXT,
-            last_username TEXT
-        )
-    ''')
-    
-    # Table for name/username change history
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS history (
-            user_id INTEGER,
-            old_name TEXT,
-            old_username TEXT,
-            changed_at TEXT
-        )
-    ''')
-    
-    # Table for message activity logs
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS activity (
-            user_id INTEGER,
-            name TEXT,
-            username TEXT,
-            group_title TEXT,
-            timestamp TEXT
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    print(f"[*] Database initialized: {DB_NAME}")
+# MongoDB Connection Setup
+try:
+    mongo_client = MongoClient(MONGO_URI)
+    db = mongo_client['spy_pro_db']
+    collection = db['activity_logs']
+    print("✅ Connected to MongoDB successfully!")
+except Exception as e:
+    print(f"❌ MongoDB Connection Error: {e}")
 
-def track_and_log(user_id, name, username, group):
-    """Logs user activity and tracks name/username changes."""
+def generate_html_dashboard():
+    """MongoDB-ൽ നിന്ന് ഡാറ്റ എടുത്ത് index.html ഫയൽ ഉണ്ടാക്കുന്നു"""
     try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # ലേറ്റസ്റ്റ് 30 മെസ്സേജുകൾ എടുക്കുന്നു
+        logs = list(collection.find().sort("timestamp", -1).limit(30))
+        
+        html_content = f"""
+        <html>
+        <head>
+            <title>Spy Pro Live Dashboard</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta http-equiv="refresh" content="60">
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0a0a; color: #fff; padding: 20px; text-align: center; }}
+                .container {{ max-width: 900px; margin: auto; background: #111; padding: 20px; border-radius: 15px; border: 1px solid #00ff00; }}
+                h2 {{ color: #00ff00; text-transform: uppercase; letter-spacing: 2px; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+                th, td {{ padding: 12px; border-bottom: 1px solid #333; text-align: left; }}
+                th {{ background: #222; color: #00ff00; }}
+                tr:hover {{ background: #1a1a1a; }}
+                .status {{ font-size: 12px; color: #888; margin-bottom: 10px; }}
+                .refresh-note {{ font-size: 10px; color: #555; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2>🏎️ Spy Pro GT3 Dashboard</h2>
+                <p class="status">Last Sync: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <table>
+                    <tr><th>User</th><th>Group / Chat</th><th>Time</th></tr>
+        """
+        
+        for log in logs:
+            html_content += f"<tr><td>{log.get('name')}</td><td>{log.get('group_title')}</td><td>{log.get('timestamp')}</td></tr>"
+            
+        html_content += """
+                </table>
+                <p class="refresh-note">Auto-refreshes every 60 seconds</p>
+            </div>
+        </body>
+        </html>
+        """
 
-        # Check for existing user to track changes
-        cursor.execute("SELECT last_name, last_username FROM current_users WHERE user_id=?", (user_id,))
-        result = cursor.fetchone()
+        # index.html സേവ് ചെയ്യുന്നു
+        with open("index.html", "w", encoding="utf-8") as f:
+            f.write(html_content)
+        
+        # GitHub Pages-ലേക്ക് ഓട്ടോമാറ്റിക്കായി പുഷ് ചെയ്യുന്നു
+        subprocess.run(["git", "config", "user.name", "GitHub Action"])
+        subprocess.run(["git", "config", "user.email", "action@github.com"])
+        subprocess.run(["git", "add", "index.html"])
+        subprocess.run(["git", "commit", "-m", "Update dashboard logs [skip ci]"])
+        subprocess.run(["git", "push"])
+        print("📊 Dashboard updated and pushed to GitHub Pages!")
 
-        if result:
-            old_name, old_username = result
-            if old_name != name or old_username != username:
-                cursor.execute("INSERT INTO history VALUES (?, ?, ?, ?)", (user_id, old_name, old_username, now))
-                cursor.execute("UPDATE current_users SET last_name=?, last_username=? WHERE user_id=?", 
-                               (name, username, user_id))
-        else:
-            cursor.execute("INSERT INTO current_users VALUES (?, ?, ?)", (user_id, name, username))
-
-        # Log the current activity
-        cursor.execute("INSERT INTO activity VALUES (?, ?, ?, ?, ?)", (user_id, name, username, group, now))
-        conn.commit()
-        conn.close()
     except Exception as e:
-        print(f"[!] Database Error: {e}")
+        print(f"⚠️ Dashboard Update Error: {e}")
 
-# Initialize Telegram Client
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH, 
-                        connection_retries=10, 
-                        timeout=30)
+client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 @client.on(events.NewMessage)
 async def monitor_handler(event):
-    """Handler for incoming messages in groups."""
     if event.is_group:
         try:
             sender = await event.get_sender()
-            user_id = event.sender_id
-            name = getattr(sender, 'first_name', 'Unknown')
-            username = getattr(sender, 'username', 'None')
-
             chat = await event.get_chat()
-            group_title = getattr(chat, 'title', 'Private Group')
-
-            track_and_log(user_id, name, username, group_title)
-            print(f"LOG: {name:15} | {group_title}")
+            
+            # ഡാറ്റ റെക്കോർഡ് ചെയ്യുന്നു
+            log_data = {
+                "name": getattr(sender, 'first_name', 'Unknown User'),
+                "group_title": getattr(chat, 'title', 'Private Group'),
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            # MongoDB-ലേക്ക് സേവ് ചെയ്യുന്നു
+            collection.insert_one(log_data)
+            print(f"📩 New Message from {log_data['name']} in {log_data['group_title']}")
+            
+            # ഡാഷ്‌ബോർഡ് അപ്‌ഡേറ്റ് ചെയ്യുന്നു
+            generate_html_dashboard()
+            
         except Exception as e:
-            # Silent fail for minor event errors to keep bot alive
-            pass
+            print(f"Error logging message: {e}")
 
 async def main():
-    print("="*50)
-    print("🚀 STARTING SPY-PRO MONITORING SYSTEM")
-    print("="*50)
-    
-    # Setup Database before starting
-    setup_db()
-    
-    try:
-        # Start client (uses the uploaded .session file)
-        await client.start()
-        
-        if await client.is_user_authorized():
-            print("✅ LOGIN SUCCESSFUL")
-            print(f"📡 STATUS: Monitoring active groups...")
-            print("-" * 50)
-            await client.run_until_disconnected()
-        else:
-            print("⚠️ SESSION EXPIRED: Please update the .session file.")
-            
-    except Exception as e:
-        print(f"❌ CRITICAL ERROR: {e}")
-    finally:
-        await client.disconnect()
+    print("🚀 Starting Spy Pro Bot...")
+    await client.start()
+    print("🏎️ GT3 is now on the track! Monitoring groups...")
+    await client.run_until_disconnected()
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n🛑 SYSTEM SHUTDOWN BY USER.")
-        sys.exit()
+    asyncio.run(main())
